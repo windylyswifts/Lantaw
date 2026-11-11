@@ -7,16 +7,14 @@ export default function AdminDashboard() {
   const [incidents, setIncidents] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Default map center (Butuan City)
   const mapCenter = { lat: 8.9475, lng: 125.5406 };
 
   useEffect(() => {
-    // 1. Fetch initial active incidents on load
     const fetchIncidents = async () => {
       const { data, error } = await supabase
         .from('incidents')
         .select('*')
-        .neq('status', 'Resolved') // Only show active emergencies
+        .neq('status', 'Resolved') 
         .order('created_at', { ascending: false });
 
       if (!error && data) {
@@ -27,14 +25,12 @@ export default function AdminDashboard() {
 
     fetchIncidents();
 
-    // 2. Subscribe to Real-Time Updates (WebSockets)
     const incidentSubscription = supabase
       .channel('public:incidents')
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'incidents' },
         (payload) => {
-          // Cleanly prepend the new incident to the state array
           setIncidents((current) => [payload.new, ...current]);
         }
       )
@@ -42,11 +38,12 @@ export default function AdminDashboard() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'incidents' },
         (payload) => {
-          // Update the specific incident's status or remove it if resolved
           setIncidents((current) => {
+            // If marked resolved, remove it from the active dashboard entirely
             if (payload.new.status === 'Resolved') {
               return current.filter((inc) => inc.id !== payload.new.id);
             }
+            // Otherwise, update the specific incident in the array
             return current.map((inc) => 
               inc.id === payload.new.id ? payload.new : inc
             );
@@ -55,11 +52,25 @@ export default function AdminDashboard() {
       )
       .subscribe();
 
-    // 3. Strict Cleanup: Prevents memory leaks when unmounting
     return () => {
       supabase.removeChannel(incidentSubscription);
     };
   }, []);
+
+  // NEW FEATURE: Function to update incident status in the database
+  const handleStatusChange = async (id, newStatus) => {
+    const { error } = await supabase
+      .from('incidents')
+      .update({ status: newStatus })
+      .eq('id', id);
+
+    if (error) {
+      console.error('Failed to update status:', error.message);
+      alert('Failed to update status. Please try again.');
+    }
+    // Notice: We do NOT call setIncidents here. The WebSocket listener above catches 
+    // this successful database update and modifies the state for us automatically.
+  };
 
   if (loading) {
     return <div className="min-h-screen flex justify-center items-center"><span className="loading loading-spinner loading-lg text-primary"></span></div>;
@@ -97,12 +108,25 @@ export default function AdminDashboard() {
             incidents.map((incident) => (
               <div key={incident.id} className="card bg-base-200 shadow-sm border border-base-300">
                 <div className="card-body p-4">
-                  <div className="flex justify-between items-start">
+                  
+                  {/* Header: Title and Status Control */}
+                  <div className="flex justify-between items-start gap-2">
                     <h3 className="card-title text-lg">{incident.incident_type}</h3>
-                    <span className={`badge ${incident.status === 'Pending' ? 'badge-warning' : 'badge-info'}`}>
-                      {incident.status}
-                    </span>
+                    
+                    {/* NEW FEATURE: Dropdown enforcing exact database values */}
+                    <select 
+                      className={`select select-sm select-bordered ${
+                        incident.status === 'Pending' ? 'text-warning' : 'text-info'
+                      }`}
+                      value={incident.status}
+                      onChange={(e) => handleStatusChange(incident.id, e.target.value)}
+                    >
+                      <option value="Pending">Pending</option>
+                      <option value="Dispatched">Dispatched</option>
+                      <option value="Resolved">Mark Resolved</option>
+                    </select>
                   </div>
+
                   <p className="text-sm mt-2">{incident.description}</p>
                   
                   {incident.contact_number && (
