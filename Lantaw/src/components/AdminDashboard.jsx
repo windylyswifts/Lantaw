@@ -10,6 +10,9 @@ export default function AdminDashboard() {
   const [incidents, setIncidents] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [dbError, setDbError] = useState(false);
+  
+  // New state to toggle the login view without leaving the page
+  const [showLoginView, setShowLoginView] = useState(false);
 
   const mapCenter = { lat: 8.9475, lng: 125.5406 };
 
@@ -21,24 +24,23 @@ export default function AdminDashboard() {
       return;
     }
 
-    // Check for an existing active session on load
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthLoading(false);
     });
 
-    // Listen for login/logout events across tabs
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      if (session) setShowLoginView(false); // Auto-close login view on success
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   // --- DATA FETCHING & REALTIME LIFECYCLE ---
-  // This ONLY runs if the user is successfully authenticated
+  // Notice: Removed the `!session` block so this runs for everyone (public and admins)
   useEffect(() => {
-    if (!session || !supabase) return;
+    if (!supabase) return;
 
     setDataLoading(true);
 
@@ -73,7 +75,7 @@ export default function AdminDashboard() {
     return () => {
       supabase.removeChannel(incidentSubscription);
     };
-  }, [session]); // Dependency array ensures WebSockets reconnect if a new admin logs in
+  }, []); 
 
   const handleStatusChange = async (id, newStatus) => {
     if (!supabase) return;
@@ -99,20 +101,25 @@ export default function AdminDashboard() {
     );
   }
 
-  if (authLoading) {
+  if (authLoading || dataLoading) {
     return <div className="min-h-screen flex justify-center items-center"><span className="loading loading-spinner loading-lg text-primary"></span></div>;
   }
 
-  // Intercept unauthenticated users and show the secure Login component
-  if (!session) {
-    return <Login onLoginSuccess={setSession} />;
+  // Intercept view to show Login screen if the public user clicked "Admin Login"
+  if (showLoginView && !session) {
+    return (
+      <div className="relative min-h-screen bg-base-200">
+        <div className="absolute top-4 left-4 z-50">
+          <button onClick={() => setShowLoginView(false)} className="btn btn-sm btn-ghost">
+            ← Back to Map
+          </button>
+        </div>
+        <Login onLoginSuccess={setSession} />
+      </div>
+    );
   }
 
-  if (dataLoading) {
-    return <div className="min-h-screen flex justify-center items-center"><span className="loading loading-spinner loading-lg text-primary"></span></div>;
-  }
-
-  // Render the secure dashboard for authenticated DRRM operators
+  // Render the dashboard (Public Read-Only OR Admin Interactive based on session)
   return (
     <div className="h-screen w-full flex flex-col md:flex-row bg-base-200">
       
@@ -134,10 +141,14 @@ export default function AdminDashboard() {
       {/* RIGHT SIDE: Incident Feed */}
       <div className="w-full md:w-1/3 h-1/2 md:h-full overflow-y-auto bg-base-100 shadow-xl z-10 flex flex-col">
         
-        {/* Secure Dashboard Header with Logout */}
+        {/* Dynamic Header: Login for public, Logout for admins */}
         <div className="p-4 border-b border-base-300 flex justify-between items-center bg-base-100 sticky top-0 z-20">
-          <h2 className="text-xl font-bold">Command Center</h2>
-          <button onClick={handleLogout} className="btn btn-sm btn-outline btn-error">Logout</button>
+          <h2 className="text-xl font-bold">Live Incident Map</h2>
+          {session ? (
+            <button onClick={handleLogout} className="btn btn-sm btn-outline btn-error">Logout</button>
+          ) : (
+            <button onClick={() => setShowLoginView(true)} className="btn btn-sm btn-outline btn-primary">Admin Login</button>
+          )}
         </div>
 
         <div className="p-4 space-y-4 flex-grow">
@@ -149,19 +160,35 @@ export default function AdminDashboard() {
                 <div className="card-body p-4">
                   <div className="flex justify-between items-start gap-2">
                     <h3 className="card-title text-lg">{incident.incident_type}</h3>
-                    <select 
-                      className={`select select-sm select-bordered ${incident.status === 'Pending' ? 'text-warning' : 'text-info'}`}
-                      value={incident.status}
-                      onChange={(e) => handleStatusChange(incident.id, e.target.value)}
-                    >
-                      <option value="Pending">Pending</option>
-                      <option value="Dispatched">Dispatched</option>
-                      <option value="Resolved">Mark Resolved</option>
-                    </select>
+                    
+                    {/* SEGREGATED CAPABILITY: Dropdown for admins, Badge for public */}
+                    {session ? (
+                      <select 
+                        className={`select select-sm select-bordered ${incident.status === 'Pending' ? 'text-warning' : 'text-info'}`}
+                        value={incident.status}
+                        onChange={(e) => handleStatusChange(incident.id, e.target.value)}
+                      >
+                        <option value="Pending">Pending</option>
+                        <option value="Dispatched">Dispatched</option>
+                        <option value="Resolved">Mark Resolved</option>
+                      </select>
+                    ) : (
+                      <span className={`badge ${incident.status === 'Pending' ? 'badge-warning' : 'badge-info'}`}>
+                        {incident.status}
+                      </span>
+                    )}
+
                   </div>
                   <p className="text-sm mt-2">{incident.description}</p>
-                  {incident.contact_number && <p className="text-xs text-gray-500 mt-1">📞 {incident.contact_number}</p>}
-                  {incident.image_url && <img src={incident.image_url} alt="Incident proof" className="w-full h-32 object-cover rounded mt-2 border border-base-300" />}
+                  
+                  {/* Privacy Guard: Hide contact numbers from the public view */}
+                  {session && incident.contact_number && (
+                    <p className="text-xs text-gray-500 mt-1">📞 {incident.contact_number}</p>
+                  )}
+                  
+                  {incident.image_url && (
+                    <img src={incident.image_url} alt="Incident proof" className="w-full h-32 object-cover rounded mt-2 border border-base-300" />
+                  )}
                   <div className="text-xs text-gray-400 mt-2 text-right">{new Date(incident.created_at).toLocaleTimeString()}</div>
                 </div>
               </div>
