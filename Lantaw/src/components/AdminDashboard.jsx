@@ -11,8 +11,10 @@ export default function AdminDashboard() {
   const [dataLoading, setDataLoading] = useState(true);
   const [dbError, setDbError] = useState(false);
   
-  // New state to toggle the login view without leaving the page
   const [showLoginView, setShowLoginView] = useState(false);
+  
+  // NEW STATE: Manage the current filter view
+  const [filterStatus, setFilterStatus] = useState('All');
 
   const mapCenter = { lat: 8.9475, lng: 125.5406 };
 
@@ -31,14 +33,13 @@ export default function AdminDashboard() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (session) setShowLoginView(false); // Auto-close login view on success
+      if (session) setShowLoginView(false);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   // --- DATA FETCHING & REALTIME LIFECYCLE ---
-  // Notice: Removed the `!session` block so this runs for everyone (public and admins)
   useEffect(() => {
     if (!supabase) return;
 
@@ -105,7 +106,6 @@ export default function AdminDashboard() {
     return <div className="min-h-screen flex justify-center items-center"><span className="loading loading-spinner loading-lg text-primary"></span></div>;
   }
 
-  // Intercept view to show Login screen if the public user clicked "Admin Login"
   if (showLoginView && !session) {
     return (
       <div className="relative min-h-screen bg-base-200">
@@ -119,7 +119,12 @@ export default function AdminDashboard() {
     );
   }
 
-  // Render the dashboard (Public Read-Only OR Admin Interactive based on session)
+  // NEW FEATURE: Derived State for Filtering
+  // This instantly filters the array before rendering without mutating the actual data
+  const displayedIncidents = filterStatus === 'All' 
+    ? incidents 
+    : incidents.filter((inc) => inc.status === filterStatus);
+
   return (
     <div className="h-screen w-full flex flex-col md:flex-row bg-base-200">
       
@@ -127,7 +132,9 @@ export default function AdminDashboard() {
       <div className="w-full md:w-2/3 h-1/2 md:h-full relative z-0">
         <MapContainer center={mapCenter} zoom={13} style={{ height: '100%', width: '100%' }}>
           <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          {incidents.map((incident) => (
+          
+          {/* Map loops over the filtered array instead of all incidents */}
+          {displayedIncidents.map((incident) => (
             <Marker key={incident.id} position={[incident.latitude, incident.longitude]}>
               <Popup>
                 <strong>{incident.incident_type}</strong><br />
@@ -141,7 +148,6 @@ export default function AdminDashboard() {
       {/* RIGHT SIDE: Incident Feed */}
       <div className="w-full md:w-1/3 h-1/2 md:h-full overflow-y-auto bg-base-100 shadow-xl z-10 flex flex-col">
         
-        {/* Dynamic Header: Login for public, Logout for admins */}
         <div className="p-4 border-b border-base-300 flex justify-between items-center bg-base-100 sticky top-0 z-20">
           <h2 className="text-xl font-bold">Live Incident Map</h2>
           {session ? (
@@ -151,17 +157,31 @@ export default function AdminDashboard() {
           )}
         </div>
 
+        {/* NEW FEATURE: Dropdown Filter Control */}
+        <div className="px-4 pt-4 pb-0">
+          <div className="form-control w-full">
+            <select 
+              className="select select-bordered select-sm w-full bg-base-200 font-semibold"
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+            >
+              <option value="All">Viewing: All Active Reports</option>
+              <option value="Pending">Viewing: Pending Only</option>
+              <option value="Dispatched">Viewing: Dispatched Only</option>
+            </select>
+          </div>
+        </div>
+
         <div className="p-4 space-y-4 flex-grow">
-          {incidents.length === 0 ? (
-            <p className="text-gray-500">No active incidents at this time.</p>
+          {displayedIncidents.length === 0 ? (
+            <p className="text-gray-500">No {filterStatus === 'All' ? 'active' : filterStatus.toLowerCase()} incidents at this time.</p>
           ) : (
-            incidents.map((incident) => (
+            displayedIncidents.map((incident) => (
               <div key={incident.id} className="card bg-base-200 shadow-sm border border-base-300">
                 <div className="card-body p-4">
                   <div className="flex justify-between items-start gap-2">
                     <h3 className="card-title text-lg">{incident.incident_type}</h3>
                     
-                    {/* SEGREGATED CAPABILITY: Dropdown for admins, Badge for public */}
                     {session ? (
                       <select 
                         className={`select select-sm select-bordered ${incident.status === 'Pending' ? 'text-warning' : 'text-info'}`}
@@ -181,7 +201,6 @@ export default function AdminDashboard() {
                   </div>
                   <p className="text-sm mt-2">{incident.description}</p>
                   
-                  {/* Privacy Guard: Hide contact numbers from the public view */}
                   {session && incident.contact_number && (
                     <p className="text-xs text-gray-500 mt-1">📞 {incident.contact_number}</p>
                   )}
