@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://krbkzrighfdcpzegcnpg.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtyYmt6cmlnaGZkY3B6ZWdjbnBnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0MTY0NzgsImV4cCI6MjEwOTk5MjQ3OH0.m-DVf431mCe6cHEpIod-vKMYYBT_VrWkE1zWGSsHXno';
 
 // Safe Initialization: Instead of throwing a fatal error that white-screens the app,
 // we log a clear console error. This allows React to mount properly.
