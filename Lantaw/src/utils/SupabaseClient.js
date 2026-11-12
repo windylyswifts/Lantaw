@@ -1,12 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-// Fail-fast validation: Alerts you immediately if .env is missing or misconfigured
+// Safe Initialization: Instead of throwing a fatal error that white-screens the app,
+// we log a clear console error. This allows React to mount properly.
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables. Check your .env file.');
+  console.error('🚨 CRITICAL: Missing Supabase environment variables. The database will not connect.');
 }
 
-// Export a single instance to be reused across the entire application (Singleton pattern)
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Export the client if variables exist, otherwise export null to prevent crashing
+export const supabase = (supabaseUrl && supabaseAnonKey) 
+  ? createClient(supabaseUrl, supabaseAnonKey) 
+  : null;
