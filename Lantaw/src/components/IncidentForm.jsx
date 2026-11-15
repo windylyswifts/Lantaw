@@ -1,28 +1,56 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../utils/SupabaseClient';
-import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
-import L from 'leaflet';
+import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
+import { INCIDENT_TYPES, getIncidentConfig } from '../utils/incidentMarkers';
 import 'leaflet/dist/leaflet.css';
 
-// SAFE INITIALIZATION: Prevent broken marker icons without crashing the production build.
-// Minifiers can alter module structures, so we must verify the prototype chain exists first.
-if (L && L.Icon && L.Icon.Default && L.Icon.Default.prototype) {
-  delete L.Icon.Default.prototype._getIconUrl;
-  L.Icon.Default.mergeOptions({
-    iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-    iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-  });
-}
+const DEFAULT_CENTER = { lat: 8.9475, lng: 125.5406 }; // Butuan City
 
-function LocationMarker({ position }) {
+function InteractiveLocationMarker({ position, icon, flyTick, onSelectLocation }) {
   const map = useMap();
+  const markerRef = useRef(null);
+
+  // Fly to coordinates ONLY when triggered by a fresh GPS capture
   useEffect(() => {
-    if (position.lat && position.lng) {
-      map.flyTo(position, 16);
+    if (flyTick > 0 && Number.isFinite(position.lat) && Number.isFinite(position.lng)) {
+      map.flyTo([position.lat, position.lng], 16, { animate: true });
     }
-  }, [position, map]);
-  return position.lat && position.lng ? <Marker position={position} /> : null;
+  }, [flyTick, position.lat, position.lng, map]);
+
+  // Allow tapping/clicking anywhere on the map to drop or move the pin
+  useMapEvents({
+    click(e) {
+      onSelectLocation({ lat: e.latlng.lat, lng: e.latlng.lng }, 'manual');
+    },
+  });
+
+  // Allow dragging the existing marker to fine-tune exact position
+  const dragHandlers = useMemo(
+    () => ({
+      dragend() {
+        const marker = markerRef.current;
+        if (marker) {
+          const { lat, lng } = marker.getLatLng();
+          onSelectLocation({ lat, lng }, 'manual');
+        }
+      },
+    }),
+    [onSelectLocation]
+  );
+
+  if (!Number.isFinite(position.lat) || !Number.isFinite(position.lng)) {
+    return null;
+  }
+
+  return (
+    <Marker
+      ref={markerRef}
+      position={[position.lat, position.lng]}
+      icon={icon}
+      draggable={true}
+      eventHandlers={dragHandlers}
+    />
+  );
 }
 
 export default function IncidentForm() {
@@ -31,52 +59,91 @@ export default function IncidentForm() {
     description: '',
     contact_number: '',
   });
-  
-  const defaultCenter = { lat: 8.9475, lng: 125.5406 }; 
+
   const [location, setLocation] = useState({ lat: null, lng: null });
+  const [locationSource, setLocationSource] = useState(null); // 'gps' | 'manual' | null
+  const [gpsFlyTick, setGpsFlyTick] = useState(0);
+  const [locatingGps, setLocatingGps] = useState(false);
+
   const [imageFile, setImageFile] = useState(null);
+  const fileInputRef = useRef(null);
+
   const [status, setStatus] = useState({ loading: false, error: null, success: false });
+
+  const hasValidLocation = Number.isFinite(location.lat) && Number.isFinite(location.lng);
+  const activeMarkerIcon = getIncidentConfig(formData.incident_type).icon;
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
+    if (status.success) setStatus((prev) => ({ ...prev, success: false }));
   };
 
   const handleImageChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       setImageFile(e.target.files[0]);
+      if (status.success) setStatus((prev) => ({ ...prev, success: false }));
     }
   };
 
+  const handleManualLocationSelect = (coords, source = 'manual') => {
+    setLocation({ lat: coords.lat, lng: coords.lng });
+    setLocationSource(source);
+    setStatus((prev) => ({ ...prev, error: null, success: false }));
+  };
+
   const handleGetLocation = () => {
-    setStatus((prev) => ({ ...prev, error: null }));
-    
+    setStatus((prev) => ({ ...prev, error: null, success: false }));
+
     if (!navigator.geolocation) {
-      setStatus((prev) => ({ ...prev, error: 'Geolocation is not supported by your browser.' }));
+      setStatus((prev) => ({
+        ...prev,
+        error: 'GPS is not supported by your browser. Tap directly on the map to place a pin.',
+      }));
       return;
     }
 
+    setLocatingGps(true);
+
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        setLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+        setLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+        setLocationSource('gps');
+        setGpsFlyTick((tick) => tick + 1);
+        setLocatingGps(false);
       },
-      (error) => {
-        setStatus((prev) => ({ ...prev, error: 'Failed to get location. Please enable GPS permissions.' }));
-      }
+      () => {
+        setLocatingGps(false);
+        setStatus((prev) => ({
+          ...prev,
+          error:
+            'Unable to access GPS. You can still tap anywhere on the map below to pin the exact incident spot.',
+        }));
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (!location.lat || !location.lng) {
-      setStatus((prev) => ({ ...prev, error: 'You must capture your location before submitting.' }));
+
+    if (!hasValidLocation) {
+      setStatus((prev) => ({
+        ...prev,
+        error: 'Please capture your GPS location or tap the map to place a pin before submitting.',
+      }));
       return;
     }
 
-    // Fail gracefully if the database client didn't load properly
     if (!supabase) {
-      setStatus({ loading: false, error: 'Database connection missing. Contact administrator.', success: false });
+      setStatus({
+        loading: false,
+        error: 'Database connection missing. Contact administrator.',
+        success: false,
+      });
       return;
     }
 
@@ -87,13 +154,13 @@ export default function IncidentForm() {
 
       if (imageFile) {
         const fileExt = imageFile.name.split('.').pop();
-        const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-        
+        const fileName = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+
         const { error: uploadError } = await supabase.storage
           .from('incident_images')
           .upload(fileName, imageFile);
 
-        if (uploadError) throw new Error('Image upload failed: ' + uploadError.message);
+        if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
 
         const { data: publicUrlData } = supabase.storage
           .from('incident_images')
@@ -102,27 +169,28 @@ export default function IncidentForm() {
         finalImageUrl = publicUrlData.publicUrl;
       }
 
-      const { error: dbError } = await supabase
-        .from('incidents')
-        .insert([{
+      const { error: dbError } = await supabase.from('incidents').insert([
+        {
           incident_type: formData.incident_type,
-          description: formData.description,
-          contact_number: formData.contact_number,
+          description: formData.description.trim(),
+          contact_number: formData.contact_number.trim() || null,
           latitude: location.lat,
           longitude: location.lng,
           image_url: finalImageUrl,
-        }]);
+        },
+      ]);
 
       if (dbError) throw dbError;
 
       setStatus({ loading: false, error: null, success: true });
       setFormData({ incident_type: 'Flood', description: '', contact_number: '' });
       setLocation({ lat: null, lng: null });
-      setImageFile(null); 
-      
-      const fileInput = document.getElementById('image-upload');
-      if (fileInput) fileInput.value = '';
+      setLocationSource(null);
+      setImageFile(null);
 
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     } catch (error) {
       setStatus({ loading: false, error: error.message, success: false });
     }
@@ -133,52 +201,128 @@ export default function IncidentForm() {
       <h2 className="text-2xl font-bold text-center">Report an Incident</h2>
 
       {status.error && <div className="alert alert-error text-sm">{status.error}</div>}
-      {status.success && <div className="alert alert-success text-sm">Report submitted successfully.</div>}
+      {status.success && (
+        <div className="alert alert-success text-sm">Report submitted successfully.</div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="form-control">
-          <label className="label"><span className="label-text">Incident Type</span></label>
-          <select name="incident_type" value={formData.incident_type} onChange={handleChange} className="select select-bordered w-full">
-            <option value="Flood">Flood</option>
-            <option value="Landslide">Landslide</option>
-            <option value="Fire">Fire</option>
-            <option value="Medical">Medical Emergency</option>
-            <option value="Rescue">Rescue Needed</option>
-            <option value="Other">Other</option>
+          <label className="label">
+            <span className="label-text">Incident Type</span>
+          </label>
+          <select
+            name="incident_type"
+            value={formData.incident_type}
+            onChange={handleChange}
+            className="select select-bordered w-full"
+          >
+            {INCIDENT_TYPES.map(({ type }) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
           </select>
         </div>
 
         <div className="form-control">
-          <label className="label"><span className="label-text">Description</span></label>
-          <textarea name="description" value={formData.description} onChange={handleChange} placeholder="Provide brief details..." required className="textarea textarea-bordered h-24"></textarea>
+          <label className="label">
+            <span className="label-text">Description</span>
+          </label>
+          <textarea
+            name="description"
+            value={formData.description}
+            onChange={handleChange}
+            placeholder="Provide brief details..."
+            required
+            className="textarea textarea-bordered h-24"
+          />
         </div>
 
         <div className="form-control">
-          <label className="label"><span className="label-text">Contact Number (Optional)</span></label>
-          <input type="tel" name="contact_number" value={formData.contact_number} onChange={handleChange} placeholder="09123456789" className="input input-bordered w-full" />
+          <label className="label">
+            <span className="label-text">Contact Number (Optional)</span>
+          </label>
+          <input
+            type="tel"
+            name="contact_number"
+            value={formData.contact_number}
+            onChange={handleChange}
+            placeholder="09123456789"
+            className="input input-bordered w-full"
+          />
         </div>
 
         <div className="form-control">
-          <label className="label"><span className="label-text">Upload Photo (Optional)</span></label>
-          <input id="image-upload" type="file" accept="image/*" onChange={handleImageChange} className="file-input file-input-bordered w-full" />
+          <label className="label">
+            <span className="label-text">Upload Photo (Optional)</span>
+          </label>
+          <input
+            ref={fileInputRef}
+            id="image-upload"
+            type="file"
+            accept="image/*"
+            onChange={handleImageChange}
+            className="file-input file-input-bordered w-full"
+          />
         </div>
 
         <div className="form-control space-y-2">
-          <label className="label"><span className="label-text">Location (Required)</span></label>
-          
-          <div className="h-48 w-full rounded-lg overflow-hidden border border-base-300 z-0 relative">
-            <MapContainer center={defaultCenter} zoom={13} scrollWheelZoom={false} style={{ height: '100%', width: '100%', zIndex: 0 }}>
-              <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              <LocationMarker position={location} />
+          <div className="flex items-center justify-between">
+            <label className="label py-0">
+              <span className="label-text">Location (Required)</span>
+            </label>
+            {hasValidLocation && (
+              <span className="text-xs font-mono text-base-content/70">
+                {location.lat.toFixed(5)}, {location.lng.toFixed(5)}
+              </span>
+            )}
+          </div>
+
+          <p className="text-xs text-base-content/70">
+            Use your current GPS location, or tap anywhere on the map and drag the pin to mark the exact spot.
+          </p>
+
+          <div className="h-56 w-full rounded-lg overflow-hidden border border-base-300 z-0 relative">
+            <MapContainer
+              center={DEFAULT_CENTER}
+              zoom={13}
+              scrollWheelZoom={true}
+              style={{ height: '100%', width: '100%', zIndex: 0 }}
+            >
+              <TileLayer
+                attribution="&copy; OpenStreetMap"
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <InteractiveLocationMarker
+                position={location}
+                icon={activeMarkerIcon}
+                flyTick={gpsFlyTick}
+                onSelectLocation={handleManualLocationSelect}
+              />
             </MapContainer>
           </div>
 
-          <button type="button" onClick={handleGetLocation} className={`btn ${location.lat ? 'btn-success' : 'btn-outline'}`}>
-            {location.lat ? 'Location Captured ✓' : '📍 Get My Current Location'}
+          <button
+            type="button"
+            onClick={handleGetLocation}
+            disabled={locatingGps}
+            className={`btn w-full ${hasValidLocation ? 'btn-success' : 'btn-outline'}`}
+          >
+            {locatingGps
+              ? 'Locating GPS...'
+              : hasValidLocation
+              ? locationSource === 'gps'
+                ? 'GPS Location Captured ✓ (Tap to Re-center)'
+                : 'Manual Pin Placed ✓ (Or Use GPS)'
+              : '📍 Get My Current Location'}
           </button>
         </div>
 
-        <button type="submit" disabled={status.loading || status.success} className="btn btn-primary w-full mt-4">
+        <button
+          type="submit"
+          disabled={status.loading}
+          className="btn btn-primary w-full mt-4"
+        >
           {status.loading ? 'Submitting...' : 'Submit Report'}
         </button>
       </form>
