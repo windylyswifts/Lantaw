@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../utils/SupabaseClient';
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
 import { INCIDENT_TYPES, getIncidentConfig } from '../utils/incidentMarkers';
@@ -6,32 +6,40 @@ import 'leaflet/dist/leaflet.css';
 
 const DEFAULT_CENTER = { lat: 8.9475, lng: 125.5406 }; // Butuan City
 
-function InteractiveLocationMarker({ position, icon, flyTick, onSelectLocation }) {
+function InteractiveLocationMarker({
+  position,
+  icon,
+  pendingFlyCoords,
+  onFlyComplete,
+  onSelectLocation,
+}) {
   const map = useMap();
   const markerRef = useRef(null);
 
-  // Fly to coordinates ONLY when triggered by a fresh GPS capture
+  // Fly to coordinates ONLY when a fresh GPS capture requests it, then clear the request
   useEffect(() => {
-    if (flyTick > 0 && Number.isFinite(position.lat) && Number.isFinite(position.lng)) {
-      map.flyTo([position.lat, position.lng], 16, { animate: true });
-    }
-  }, [flyTick, position.lat, position.lng, map]);
+    if (!pendingFlyCoords) return;
 
-  // Allow tapping/clicking anywhere on the map to drop or move the pin
+    const targetZoom = Math.max(map.getZoom(), 16);
+    map.flyTo([pendingFlyCoords.lat, pendingFlyCoords.lng], targetZoom, { animate: true });
+    onFlyComplete();
+  }, [pendingFlyCoords, map, onFlyComplete]);
+
+  // Allow tapping/clicking anywhere on the map without altering zoom or pan
   useMapEvents({
     click(e) {
-      onSelectLocation({ lat: e.latlng.lat, lng: e.latlng.lng }, 'manual');
+      onSelectLocation({ lat: e.latlng.lat, lng: e.latlng.lng });
     },
   });
 
-  // Allow dragging the existing marker to fine-tune exact position
+  // Allow dragging the existing marker without altering zoom or pan
   const dragHandlers = useMemo(
     () => ({
       dragend() {
         const marker = markerRef.current;
         if (marker) {
           const { lat, lng } = marker.getLatLng();
-          onSelectLocation({ lat, lng }, 'manual');
+          onSelectLocation({ lat, lng });
         }
       },
     }),
@@ -62,7 +70,7 @@ export default function IncidentForm() {
 
   const [location, setLocation] = useState({ lat: null, lng: null });
   const [locationSource, setLocationSource] = useState(null); // 'gps' | 'manual' | null
-  const [gpsFlyTick, setGpsFlyTick] = useState(0);
+  const [pendingFlyCoords, setPendingFlyCoords] = useState(null);
   const [locatingGps, setLocatingGps] = useState(false);
 
   const [imageFile, setImageFile] = useState(null);
@@ -86,11 +94,15 @@ export default function IncidentForm() {
     }
   };
 
-  const handleManualLocationSelect = (coords, source = 'manual') => {
+  const handleManualLocationSelect = useCallback((coords) => {
     setLocation({ lat: coords.lat, lng: coords.lng });
-    setLocationSource(source);
+    setLocationSource('manual');
     setStatus((prev) => ({ ...prev, error: null, success: false }));
-  };
+  }, []);
+
+  const handleFlyComplete = useCallback(() => {
+    setPendingFlyCoords(null);
+  }, []);
 
   const handleGetLocation = () => {
     setStatus((prev) => ({ ...prev, error: null, success: false }));
@@ -107,12 +119,13 @@ export default function IncidentForm() {
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        setLocation({
+        const coords = {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
-        });
+        };
+        setLocation(coords);
         setLocationSource('gps');
-        setGpsFlyTick((tick) => tick + 1);
+        setPendingFlyCoords(coords);
         setLocatingGps(false);
       },
       () => {
@@ -186,6 +199,7 @@ export default function IncidentForm() {
       setFormData({ incident_type: 'Flood', description: '', contact_number: '' });
       setLocation({ lat: null, lng: null });
       setLocationSource(null);
+      setPendingFlyCoords(null);
       setImageFile(null);
 
       if (fileInputRef.current) {
@@ -296,7 +310,8 @@ export default function IncidentForm() {
               <InteractiveLocationMarker
                 position={location}
                 icon={activeMarkerIcon}
-                flyTick={gpsFlyTick}
+                pendingFlyCoords={pendingFlyCoords}
+                onFlyComplete={handleFlyComplete}
                 onSelectLocation={handleManualLocationSelect}
               />
             </MapContainer>
